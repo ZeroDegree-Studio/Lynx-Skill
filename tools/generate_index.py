@@ -94,6 +94,39 @@ def _entry(skill_id: str, meta: dict[str, Any], form: str, language: str,
     }
 
 
+def _parse_yaml(text: str) -> dict[str, Any] | None:
+    """解析 YAML：优先 PyYAML，缺包时退回最小顶层键值解析（够索引用）。"""
+    try:
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+        return data if isinstance(data, dict) else None
+    except ImportError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"  ! YAML 解析失败: {e}", file=sys.stderr)
+        return None
+    data: dict[str, Any] = {}
+    for line in text.splitlines():
+        if not line or line[:1] in (" ", "\t", "#") or ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        if v == "[]":
+            data[k] = []
+        elif v.startswith("[") and v.endswith("]"):
+            import re as _re
+
+            pairs = _re.findall(r'"([^"]*)"|\'([^\']*)\'', v)
+            data[k] = [a or b for a, b in pairs]
+        else:
+            data[k] = v.strip("'\"")
+    return data or None
+
+
 def extract_single_file(path: Path) -> dict[str, Any] | None:
     """Parse a single-file skill and return its index entry, or None on failure."""
     ext = path.suffix.lower()
@@ -105,12 +138,9 @@ def extract_single_file(path: Path) -> dict[str, Any] | None:
         return None
 
     if ext == ".yaml" or ext == ".yml":
-        try:
-            import yaml
-
-            data = yaml.safe_load(text) or {}
-        except Exception as e:  # noqa: BLE001
-            print(f"  ! SKIP {path.name}: YAML parse error: {e}", file=sys.stderr)
+        data = _parse_yaml(text)
+        if data is None:
+            print(f"  ! SKIP {path.name}: YAML parse error", file=sys.stderr)
             return None
         if isinstance(data, list):  # v1 模板：文件顶层是技能条目列表
             data = data[0] if data and isinstance(data[0], dict) else {}
@@ -133,12 +163,9 @@ def extract_single_file(path: Path) -> dict[str, Any] | None:
 def extract_dir_skill(d: Path) -> dict[str, Any] | None:
     """Parse a directory skill (manifest.yaml) and return its index entry."""
     mf_path = d / "manifest.yaml"
-    try:
-        import yaml
-
-        meta = yaml.safe_load(mf_path.read_text(encoding="utf-8")) or {}
-    except Exception as e:  # noqa: BLE001
-        print(f"  ! SKIP {d.name}: manifest parse error: {e}", file=sys.stderr)
+    meta = _parse_yaml(mf_path.read_text(encoding="utf-8"))
+    if meta is None:
+        print(f"  ! SKIP {d.name}: manifest parse error", file=sys.stderr)
         return None
     if not isinstance(meta, dict):
         return None
